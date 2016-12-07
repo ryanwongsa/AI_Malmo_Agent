@@ -123,7 +123,7 @@ def GetMissionInstance( mission_type, mission_seed, agent_type):
     #-- HINT: It is  crucial that you understand the details of the mission, this will require some knowledge of uncertainty/probability and random variables --# 
     random.seed(mission_seed)
     reward_goal = abs(round(random.gauss(1000, 400)))+0.25
-    reward_diamond = round(random.gauss(4, 10))
+    reward_diamond = abs(round(random.gauss(4, 10)))
     reward_timeout = -round(abs(random.gauss(1000, 400)))+0.20
     reward_sendcommand = -random.randrange(2,10)
    
@@ -309,6 +309,126 @@ class AgentRealistic:
         self.solution_report.start()
 
         # INSERT: YOUR SOLUTION HERE (REWARDS MUST BE UPDATED IN THE solution_report)
+        self.agent_host.setObservationsPolicy(MalmoPython.ObservationsPolicy.LATEST_OBSERVATION_ONLY)
+        self.agent_host.setVideoPolicy(MalmoPython.VideoPolicy.LATEST_FRAME_ONLY)
+        self.agent_host.setRewardsPolicy(MalmoPython.RewardsPolicy.KEEP_ALL_REWARDS)
+
+        time.sleep(1)
+
+        self.solution_report.start()
+
+        state_t = self.agent_host.getWorldState()
+
+        # INSERT: YOUR SOLUTION HERE (REWARDS MUST BE UPDATED IN THE solution_report)
+        maze_map_locations=state_space.state_locations
+        # print "LOCATIONS", maze_map_locations
+        maze_map = dict(state_space.state_actions)
+        print "goal:",state_space.goal_id
+
+        result = dict()
+        H = dict()
+        s = None
+        a = None
+        def cost_func(s_dash):
+            return math.sqrt( (maze_map_locations[s_dash][0]-state_space.goal_loc[0])**2 + (maze_map_locations[s_dash][1]-state_space.goal_loc[1])**2) # CHANGE
+
+        def  LRTA_COST(s, a, s_dash, H ):
+            if s_dash is None:
+                return cost_func(s)
+            else:
+                return 1 + H[s_dash]
+
+        def lrta_agent(s_dash,result,H,s,a):
+            if s_dash == state_space.goal_id: # CHANGE
+                return s_dash
+            if s_dash not in H:
+                H[s_dash] =  cost_func(s_dash)
+                # print H
+            if s != None:
+                result[(s,a)]=s_dash
+                # for each action (b) in s
+                minVal =100000000;
+                for b in maze_map[s]:
+                    new_dist =  LRTA_COST(s, b, result.get((s, b)), H)
+                    if new_dist < minVal:
+                        minVal = new_dist;
+                H[s] = minVal
+
+            minVal =100000000;
+            minAction=""
+            for b in maze_map[s_dash]:
+                new_dist =  LRTA_COST(s_dash,b,result.get((s_dash,b)),H)
+                if new_dist < minVal:
+                    minVal = new_dist;
+                    minAction=b
+            a = minAction
+            s = s_dash
+            return a,result,H,s,a
+
+        toMove=state_space.start_id # CHANGE
+        # while toMove!=state_space.goal_id: # CHANGE
+        #     toMove,result,H,s,a = lrta_agent(toMove,result,H,s,a) # CHANGE
+        #     print toMove
+        while state_t.is_mission_running:
+
+            try:
+                toMove,result,H,s,a = lrta_agent(toMove,result,H,s,a)
+                print("Action_t: Goto state " + toMove)
+                if toMove == state_space.goal_id:
+                    # Hack for AbsolutMovements: Do not take the full step to 1,9 ; then you will "die" we just need to be close enough (0.25)
+                    # Need to change this to goal location
+                    x_new = state_space.goal_loc[0]
+                    z_new = state_space.goal_loc[1]-0.25
+                else:
+                    xz_new = maze_map_locations.get(toMove);
+                    x_new = xz_new[0] + 0.5
+                    z_new = xz_new[1] + 0.5
+                print "New locations:", x_new, z_new
+                self.agent_host.sendCommand("tp " + str(x_new) + " " + str(217) + " " + str(z_new))
+                self.solution_report.addAction()
+            except RuntimeError as e:
+                print "Failed to send command:",e
+                pass
+
+
+            if state_t.number_of_observations_since_last_state > 0: # Has any Oracle-like and/or internal sensor observations come in?
+                msg = state_t.observations[-1].text                 # Get the details for the last observed state
+                oracle_and_internal = json.loads(msg)               # Parse the Oracle JSON
+                # print oracle_and_internal
+                #-- Oracle sensor --#
+                grid = oracle_and_internal.get(u'grid', 0)          # Demo only, string with the
+
+                #-- GPS-like sensor  --#
+                xpos = oracle_and_internal.get(u'XPos', 0)          # Demo only, position in 2D plane, 1st axis
+                zpos = oracle_and_internal.get(u'ZPos', 0)          # Demo only, position in 2D plane, 2nd axis (yes Z!)
+                ypos = oracle_and_internal.get(u'YPos', 0)          # Demo only, height as measured from surface! (yes Y!)
+
+                #-- Standard "internal" sensory inputs --#
+                yaw  = oracle_and_internal.get(u'Yaw', 0)
+                pitch = oracle_and_internal.get(u'Pitch', 0)
+
+            #-- Wait 0.5 sec --#
+            time.sleep(0.5)
+
+            #-- Set the world state --#
+            state_t = self.agent_host.getWorldState()
+
+
+            #-- Collect the number of rewards and add to reward_cumulative  --#
+            #-- Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer  --#
+            for reward_t in state_t.rewards:
+                print("Reward_t:",reward_t.getValue())
+                self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
+
+            #-- Check if anything went wrong along the way  --#
+            for error in state_t.errors:
+                print("Error:",error.text)
+            #-- Print some of the state information --#
+            print("video,observations,rewards received:",state_t.number_of_video_frames_since_last_state,state_t.number_of_observations_since_last_state,state_t.number_of_rewards_since_last_state)
+            print("\t x,y,z,yaw,pitch:",xpos,ypos,zpos,yaw,pitch)
+            # print('\tRadius X surroundings: ' + str(grid))
+
+        print("Mission has ended ... either because time has passed (negative reward) or goal reached (positive reward)")
 
         return
 
@@ -318,7 +438,7 @@ class AgentSimple:
       
     def __init__(self,agent_host,agent_port, mission_type, mission_seed, solution_report, state_space):
         """ Constructor for the simple agent """
-        self.AGENT_MOVEMENT_TYPE = 'Discrete' # HINT: You can change this if you want {Absolute, Discrete, Continuous}
+        self.AGENT_MOVEMENT_TYPE = 'Absolute' # HINT: You can change this if you want {Absolute, Discrete, Continuous}
         self.AGENT_NAME = 'Simple'
 
         self.agent_host = agent_host
@@ -337,11 +457,205 @@ class AgentSimple:
         print('Generate and load the ' + self.mission_type + ' mission with seed ' + str(self.mission_seed) + ' allowing ' +  self.AGENT_MOVEMENT_TYPE + ' movements')            
         mission_xml = init_mission(self.agent_host, self.agent_port, self.AGENT_NAME, self.mission_type, self.mission_seed, self.AGENT_MOVEMENT_TYPE)            
         self.solution_report.setMissionXML(mission_xml)        
+        
+        self.agent_host.setObservationsPolicy(MalmoPython.ObservationsPolicy.LATEST_OBSERVATION_ONLY)
+        self.agent_host.setVideoPolicy(MalmoPython.VideoPolicy.LATEST_FRAME_ONLY)
+        self.agent_host.setRewardsPolicy(MalmoPython.RewardsPolicy.KEEP_ALL_REWARDS)
+
         time.sleep(1)
+
         self.solution_report.start()
         
+        state_t = self.agent_host.getWorldState()
+
         # INSERT: YOUR SOLUTION HERE (REWARDS MUST BE UPDATED IN THE solution_report)
+        maze_map_locations=state_space.state_locations
+        maze_map = UndirectedGraph(dict(state_space.state_actions))
+
+        node_colors = dict()
+
+        for n, p in maze_map_locations.items():
+            node_colors[n] = "white"
+
+        initial_node_colors = dict(node_colors)
+
+
+        maze_problem = GraphProblem(state_space.start_id, state_space.goal_id, maze_map)
+
+        def best_first_graph_search(problem, f):
+            """Search the nodes with the lowest f scores first.
+            You specify the function f(node) that you want to minimize; for example,
+            if f is a heuristic estimate to the goal, then we have greedy best
+            first search; if f is node.depth then we have breadth-first search.
+            There is a subtlety: the line "f = memoize(f, 'f')" means that the f
+            values will be cached on the nodes as they are computed. So after doing
+            a best first search you can examine the f values of the path returned."""
+
+            # we use these two variables at the time of visualisations
+            iterations = 0
+            all_node_colors = []
+            node_colors = dict(initial_node_colors)
+
+            f = memoize(f, 'f')
+            node = Node(problem.initial)
+            # print "initial:", node
+            # print "node state intial:", node.state
+            node_colors[node.state] = "red"
+            iterations += 1
+            all_node_colors.append(dict(node_colors))
+            # print all_node_colors
+
+            if problem.goal_test(node.state):
+                node_colors[node.state] = "green"
+                iterations += 1
+                all_node_colors.append(dict(node_colors))
+                return(iterations, all_node_colors, node)
+
+            frontier = PriorityQueue(min, f)
+            frontier.append(node)
+            # print frontier
+
+            node_colors[node.state] = "orange"
+            iterations += 1
+            all_node_colors.append(dict(node_colors))
+
+            explored = set()
+            while frontier:
+                node = frontier.pop()
+                # print "Popped:",node
+                node_colors[node.state] = "red"
+                iterations += 1
+                all_node_colors.append(dict(node_colors))
+
+                if problem.goal_test(node.state):
+                    node_colors[node.state] = "green"
+                    iterations += 1
+                    # print iterations
+                    all_node_colors.append(dict(node_colors))
+                    return(iterations, all_node_colors, node)
+
+                explored.add(node.state)
+                # print node.state
+                for child in node.expand(problem):
+                    if child.state not in explored and child not in frontier:
+                        frontier.append(child)
+                        node_colors[child.state] = "orange"
+                        iterations += 1
+                        all_node_colors.append(dict(node_colors))
+                    elif child in frontier:
+                        incumbent = frontier[child]
+                        if f(child) < f(incumbent):
+                            del frontier[incumbent]
+                            frontier.append(child)
+                            node_colors[child.state] = "orange"
+                            iterations += 1
+                            all_node_colors.append(dict(node_colors))
+
+                node_colors[node.state] = "gray"
+                iterations += 1
+                all_node_colors.append(dict(node_colors))
+            return 0,0,0
+
+        def astar_search(problem, h=None):
+            """A* search is best-first graph search with f(n) = g(n)+h(n).
+            You need to specify the h function when you call astar_search, or
+            else in your Problem subclass."""
+            h = memoize(h or problem.h, 'h')
+            # print problem
+            iterations, all_node_colors, node = best_first_graph_search(problem, lambda n: n.path_cost + h(n))
+            return(iterations, all_node_colors, node)
+
+        # astar_search(problem=maze_problem, h=None)
+        iterations, all_node_colors, node = astar_search(problem=maze_problem, h=None)
+        print node
+
+        solution_path = [node]
+        cnode = node.parent
+        print cnode
+        solution_path.append(cnode)
+        print solution_path
+
+        while cnode.state != "S_00_00": # CHANGE THIS TO state_space.start_id
+            cnode = cnode.parent
+            if cnode is None:
+                break
+            solution_path.append(cnode)
+
+        #
+        print solution_path
+
+        while state_t.is_mission_running:        
+            target_node = solution_path.pop()
+
+            try:
+                print("Action_t: Goto state " + target_node.state)
+                if target_node.state == state_space.goal_id:
+                    x_new = state_space.goal_loc[0]
+                    z_new = state_space.goal_loc[1]-0.25
+                else:
+                    xz_new = maze_map_locations.get(target_node.state);
+                    x_new = xz_new[0] + 0.5
+                    z_new = xz_new[1] + 0.5
+
+                self.agent_host.sendCommand("tp " + str(x_new) + " " + str(217) + " " + str(z_new))
+                self.solution_report.addAction()
+
+            except RuntimeError as e:
+                print "Failed to send command:",e
+                pass
+            
+
+            xpos  = None
+            ypos  = None
+            zpos  = None
+            yaw   = None
+            pitch = None
+            grid  = None
+
+            if state_t.number_of_observations_since_last_state > 0: # Has any Oracle-like and/or internal sensor observations come in?
+                msg = state_t.observations[-1].text                 # Get the details for the last observed state
+                oracle_and_internal = json.loads(msg)               # Parse the Oracle JSON
+                # print oracle_and_internal
+                #-- Oracle sensor --#
+                grid = oracle_and_internal.get(u'grid', 0)          # Demo only, string with the
+
+                #-- GPS-like sensor  --#
+                xpos = oracle_and_internal.get(u'XPos', 0)          # Demo only, position in 2D plane, 1st axis
+                zpos = oracle_and_internal.get(u'ZPos', 0)          # Demo only, position in 2D plane, 2nd axis (yes Z!)
+                ypos = oracle_and_internal.get(u'YPos', 0)          # Demo only, height as measured from surface! (yes Y!)
+
+                #-- Standard "internal" sensory inputs --#
+                yaw  = oracle_and_internal.get(u'Yaw', 0)
+                pitch = oracle_and_internal.get(u'Pitch', 0)     
+       
+            #-- Vision sensor --#
+            if state_t.number_of_video_frames_since_last_state > 0: # Has any Vision percepts been registred ?
+                frame = state_t.video_frames[0]
+
+
+            #-- Wait 0.5 sec --#
+            time.sleep(0.5)
         
+            #-- Set the world state --#
+            state_t = self.agent_host.getWorldState()
+
+
+            #-- Collect the number of rewards and add to reward_cumulative  --#
+            #-- Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer  --#
+            for reward_t in state_t.rewards:
+                print("Reward_t:",reward_t.getValue())                
+                self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
+
+            #-- Check if anything went wrong along the way  --#
+            for error in state_t.errors:
+                print("Error:",error.text)
+
+            #-- Print some of the state information --#
+            print("video,observations,rewards received:",state_t.number_of_video_frames_since_last_state,state_t.number_of_observations_since_last_state,state_t.number_of_rewards_since_last_state)
+            print("\t x,y,z,yaw,pitch:",xpos,ypos,zpos,yaw,pitch)
+            #print('\tRadius X surroundings: ' + str(grid))
+                            
+        print("Mission has ended ... either because time has passed (negative reward) or goal reached (positive reward)")        
         return
 
 
@@ -351,7 +665,7 @@ class AgentRandom:
     
     def __init__(self,agent_host,agent_port, mission_type, mission_seed, solution_report, state_space_graph):
         """ Constructor for the Random agent """
-        self.AGENT_MOVEMENT_TYPE = 'Continuous'
+        self.AGENT_MOVEMENT_TYPE = 'Discrete'
         self.AGENT_NAME = 'Random' 
 
         self.agent_host = agent_host
@@ -387,50 +701,8 @@ class AgentRandom:
         agent_confusement_level = 0.8                
 
         #-- Main loop: --#
-        while state_t.is_mission_running:
-    
-            #-- This is a random agent --#
-            try:
-                #-- Random hardwired moves --#
-                self.agent_host.sendCommand("pitch " + str(0)) # 0: look straigh ahead
-                self.solution_report.addAction()
-            
-                self.agent_host.sendCommand("move "  + str(1)) # 1: means: move forward as fast as possible (in direction of sight)        
-                self.solution_report.addAction()
+        while state_t.is_mission_running:        
 
-                self.agent_host.sendCommand("turn "  + str(agent_confusement_level*(random.random()*2-1)) ) # start turning in a random direction, rather slowly
-                self.solution_report.addAction()
-            except RuntimeError as e:
-                print("Failed to send command:",e)
-                pass
-    
-            #-- Wait 0.5 sec --#
-            time.sleep(0.5)
-        
-            #-- Set the world state --#
-            state_t = self.agent_host.getWorldState()
-    
-            #-- Stop movement --#
-            if state_t.is_mission_running:
-                #-- Enforce a simple discrete behavior by stopping any continuous movement in progress --#
-                self.agent_host.sendCommand("move "  + str(0))
-                self.solution_report.addAction()
-
-                self.agent_host.sendCommand("pitch " + str(0))
-                self.solution_report.addAction()
-            
-                self.agent_host.sendCommand("turn "  + str(0))
-                self.solution_report.addAction()
-
-            #-- Collect the number of rewards and add to reward_cumulative  --#
-            #-- Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer  --#
-            for reward_t in state_t.rewards:
-                print("Reward_t:",reward_t.getValue())                
-                self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
-
-            #-- Check if anything went wrong along the way  --#
-            for error in state_t.errors:
-                print("Error:",error.text)
 
             #-- Handle the percepts/sensors  --#
             xpos  = None
@@ -440,6 +712,8 @@ class AgentRandom:
             pitch = None
             grid  = None
 
+            potentialMoves = []
+
             #-- Oracle and Internal Sensors--#
             if state_t.number_of_observations_since_last_state > 0: # Has any Oracle-like and/or internal sensor observations come in?
                 msg = state_t.observations[-1].text                 # Get the details for the last observed state
@@ -447,7 +721,27 @@ class AgentRandom:
 
                 #-- Oracle sensor --#
                 grid = oracle_and_internal.get(u'grid', 0)          # Demo only, string with the 
-        
+                
+                # ========================================
+                mid = (len(grid)-1) // 2
+                diff = int(math.sqrt(len(grid)))
+                # print diff
+                south = grid[mid+diff]
+                west  = grid[mid+1]
+                east  = grid[mid-1]
+                north = grid[mid-diff]
+                center = grid[mid]
+
+                if (south != "stained_hardened_clay") and (south != "stone"):
+                    potentialMoves.append("movesouth 1")
+                if (west != "stained_hardened_clay") and (west != "stone"):
+                    potentialMoves.append("moveeast 1")
+                if (east != "stained_hardened_clay") and (east != "stone"):
+                    potentialMoves.append("movewest 1")
+                if (north != "stained_hardened_clay") and (north != "stone"):
+                    potentialMoves.append("movenorth 1")
+                #==========================================
+
                 #-- GPS-like sensor  --#
                 xpos = oracle_and_internal.get(u'XPos', 0)          # Demo only, position in 2D plane, 1st axis
                 zpos = oracle_and_internal.get(u'ZPos', 0)          # Demo only, position in 2D plane, 2nd axis (yes Z!)
@@ -460,15 +754,32 @@ class AgentRandom:
             #-- Vision sensor --#
             if state_t.number_of_video_frames_since_last_state > 0: # Has any Vision percepts been registred ?
                 frame = state_t.video_frames[0]
-                # Uncomment this code for gaining access to the vision of the agent
-                # img = Image.frombytes('RGB', (frame.width,frame.height), str(frame.pixels) )
-                # red, green, blue = img.split()
-                # img.show()
-                # red.show()
-                # green.show()
-                # blue.show()        
-                # Oracle
-                # Depth: Your can get a pre-computed depth image the state_t.video_frames[0].pixels
+
+
+            if state_t.is_mission_running:
+                if len(potentialMoves)!=0:
+                    actionIdx = random.randint(0, len(potentialMoves)-1)
+                    self.agent_host.sendCommand(potentialMoves[actionIdx])
+                    self.solution_report.addAction()
+
+            
+
+            #-- Wait 0.5 sec --#
+            time.sleep(0.5)
+        
+            #-- Set the world state --#
+            state_t = self.agent_host.getWorldState()
+
+
+            #-- Collect the number of rewards and add to reward_cumulative  --#
+            #-- Note: Since we only observe the sensors and environment every a number of rewards may have accumulated in the buffer  --#
+            for reward_t in state_t.rewards:
+                print("Reward_t:",reward_t.getValue())                
+                self.solution_report.addReward(reward_t.getValue(), datetime.datetime.now())
+
+            #-- Check if anything went wrong along the way  --#
+            for error in state_t.errors:
+                print("Error:",error.text)
 
             #-- Print some of the state information --#
             print("video,observations,rewards received:",state_t.number_of_video_frames_since_last_state,state_t.number_of_observations_since_last_state,state_t.number_of_rewards_since_last_state)
@@ -657,7 +968,7 @@ if __name__ == "__main__":
 
     #-- Define default arguments, in case you run the module as a script --#
     DEFAULT_STUDENT_GUID = 'template'
-    DEFAULT_AGENT_NAME   = 'Random' #HINT: Currently choose between {Random,Simple, Realistic}
+    DEFAULT_AGENT_NAME   = 'Realistic' #HINT: Currently choose between {Random,Simple, Realistic}
     DEFAULT_MALMO_PATH   = '/Users/RyanWong/Desktop/Malmo-0.17.0-Mac-64bit/'   # HINT: Change this to your own path, forward slash only!     
     DEFAULT_AIMA_PATH    = '/Users/RyanWong/Desktop/aima-python/'   # HINT: Change this to your own path, forward slash only, should be the 2.7 version from https://www.dropbox.com/s/vulnv2pkbv8q92u/aima-python_python_v27_r001.zip?dl=0)
     DEFAULT_MISSION_TYPE = 'small' #HINT: Choose between {small,medium,large}
